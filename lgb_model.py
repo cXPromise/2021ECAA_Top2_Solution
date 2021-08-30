@@ -89,6 +89,10 @@ def feature_extractor(train_df, test_df):
     data.loc[data['zhi_1h_cnt'] == 0, 'zhi_1h_ratio'] = 0
     data['buzhi_1h_ratio'] = data['buzhi_1h'] / data['zhi_1h_cnt']
     data.loc[data['zhi_1h_cnt'] == 0, 'buzhi_1h_ratio'] = 0
+    data['zhi_2h_ratio'] = data['zhi_2h'] / data['zhi_2h_cnt']
+    data.loc[data['zhi_2h_cnt'] == 0, 'zhi_2h_ratio'] = 0
+    data['buzhi_2h_ratio'] = data['buzhi_2h'] / data['zhi_2h_cnt']
+    data.loc[data['zhi_2h_cnt'] == 0, 'buzhi_2h_ratio'] = 0
 
     ### 1. magic特征
     data = gen_magic_features(data)
