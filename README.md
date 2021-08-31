@@ -1,5 +1,5 @@
 # 2021ECAA_Top2_Solution
-目前仅上传特征工程及lightgbm单模型部分
+已上传特征工程及lightgbm、catboost、xgboost训练部分
 
 ## 团队成员
 Ethan、青禹小生、天才儿童
