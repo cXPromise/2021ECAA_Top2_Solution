@@ -1,3 +1,7 @@
+# -*- coding：utf-8 -*-
+# Author: Ethan
+# Time: 2021/8/31 14:20
+
 import pandas as pd
 import numpy as np
 import warnings
@@ -10,9 +14,8 @@ from sklearn.metrics import mean_squared_error
 from tqdm import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
-# from gensim.models import Word2Vec
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import TruncatedSVD
+from catboost import CatBoostRegressor, Pool
+import xgboost as xgb
 warnings.filterwarnings('ignore')
 
 def load_dataset(path):
@@ -227,6 +230,123 @@ def lgb_reg_model(train, valid, test, target):
     preds = lgb_model.predict(test[feats])
     return valid_preds, preds
 
+def cbt_reg_model(train, valid, test, target):
+    catboost_params = {
+        'iterations': 10000,
+        'learning_rate': 0.05,
+        'eval_metric': 'RMSE',
+        'task_type': 'GPU',
+        'early_stopping_rounds': 200,
+        'use_best_model': True,
+        'verbose': 100,
+        'depth': 10,
+        'bootstrap_type': 'Bernoulli',
+        'boosting_type': 'Plain',
+        'subsample': 0.8
+    }
+    feats = [f for f in train.columns if f not in ['article_id', 'date', 'orders_3h_15h', 'week']]
+
+    print('线下训练集样本数：%d' % (train.shape[0]))
+    print('线下验证集样本数：%d' % (valid.shape[0]))
+    print('特征个数：%d' % (len(feats)))
+    print('开始线下验证......')
+    dtrain = Pool(train[feats].values,
+                  label=train[target])
+    dvalid = Pool(valid[feats].values,
+                  label=valid[target])
+    cbt_model = CatBoostRegressor(**catboost_params)
+    cbt_model.fit(dtrain, eval_set=dvalid)
+    #     print(cbt_model.best_score_['validation'])
+    score = cbt_model.best_score_['validation']['RMSE']
+    valid_preds = cbt_model.predict(valid[feats].values)
+    del dtrain, dvalid
+    gc.collect()
+
+    print('开始线上预测......')
+    best_iters = int(cbt_model.best_iteration_ * 1.2)
+    catboost_params = {
+        'iterations': best_iters,
+        'learning_rate': 0.05,
+        'eval_metric': 'RMSE',
+        'task_type': 'GPU',
+        'early_stopping_rounds': 200,
+        #         'use_best_model': True,
+        'verbose': 100,
+        'depth': 10,
+        'bootstrap_type': 'Bernoulli',
+        'boosting_type': 'Plain',
+        'subsample': 0.8
+    }
+    all_train = pd.concat([train, valid], axis=0, ignore_index=True)
+
+    dtrain = Pool(all_train[feats],
+                  label=all_train[target])
+    del all_train
+    gc.collect()
+    cbt_model = CatBoostRegressor(**catboost_params)
+    cbt_model.fit(dtrain)
+    del dtrain
+    gc.collect()
+    preds = cbt_model.predict(test[feats].values)
+    return valid_preds, preds
+
+def xgb_reg_model(train, valid, test, target):
+    feats = [f for f in train.columns if f not in ['article_id', 'date', 'orders_3h_15h',
+                                                   'week', 'baike_id_2h_price_diff_vs_mean', 'baike_id_2h_price_diff_ratio_vs_mean',
+                                                   'url_price_diff_vs_mean', 'url_price_diff_ratio_vs_mean']]
+
+    print('线下训练集样本数：%d' % (train.shape[0]))
+    print('线下验证集样本数：%d' % (valid.shape[0]))
+    print('特征个数：%d' % (len(feats)))
+    print('开始线下验证......')
+    clf = xgb.XGBRegressor(
+        n_estimators=10000,
+        max_depth=12,
+        learning_rate=0.02,
+        subsample=0.8,
+        colsample_bytree=0.4,
+        missing=-1,
+        eval_metric='rmse',
+        # USE CPU
+        # nthread=4,
+        # tree_method='hist'
+        # USE GPU
+        tree_method='gpu_hist'
+    )
+    xgb_model = clf.fit(train[feats], train[target],
+                        eval_set=[(valid[feats], valid[target])],
+                        verbose=100,
+                        early_stopping_rounds=200)
+    valid_preds = xgb_model.predict(valid[feats].values)
+    #     del dtrain, dvalid
+    gc.collect()
+
+    print('开始线上预测......')
+    best_iters = int(xgb_model.best_iteration * 1.2)
+    clf = xgb.XGBRegressor(
+        n_estimators=best_iters,
+        max_depth=12,
+        learning_rate=0.02,
+        subsample=0.8,
+        colsample_bytree=0.4,
+        missing=-1,
+        eval_metric='rmse',
+        # USE CPU
+        # nthread=4,
+        # tree_method='hist'
+        # USE GPU
+        tree_method='gpu_hist'
+    )
+    all_train = pd.concat([train, valid], axis=0, ignore_index=True)
+
+    xgb_model = clf.fit(all_train[feats],
+                        all_train[target],
+                        verbose=100)
+    del all_train
+    gc.collect()
+    preds = xgb_model.predict(test[feats].values)
+    return valid_preds, preds
+
 def gen_submission(df, preds, sub_path):
     sub = df[['article_id']].copy()
     sub['orders_3h_15h'] = preds
@@ -239,7 +359,10 @@ def main(data_path, sub_path):
     train, valid, test = split_dataset(data=data, valid_start_date=110, gap=7) # 划分训练\验证集
     del train_df, test_df
     gc.collect()
-    oof, preds = lgb_reg_model(train, valid, test, 'orders_3h_15h') # 训练模型
+    lgb_oof, lgb_preds = lgb_reg_model(train, valid, test, 'orders_3h_15h') # lightgbm
+    cbt_oof, cbt_preds = cbt_reg_model(train, valid, test, 'orders_3h_15h')  # catboost
+    xgb_oof, xgb_preds = xgb_reg_model(train, valid, test, 'orders_3h_15h')  # xgboost
+    preds = 0.3*lgb_preds + 0.5*cbt_preds + 0.2*xgb_preds # 加权融合
     gen_submission(test, preds, sub_path) # 生成提交文件
 
 if __name__ == '__main__':
